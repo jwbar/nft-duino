@@ -1,135 +1,106 @@
-#include <WiFi.h>
-#include <ESPAsyncWebServer.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 #include <ArduinoOTA.h>
-#include <time.h>
 
-// WiFi credentials
+// === CONFIG ===
 const char* ssid = "CHANGESSID";
-const char* password = "changePSWRD";
+const char* password = "ChangePASS";
 
-// Relay pin
-const int relayPin = 13;
+#define PIN_D4 D4  // On NodeMCU, D4 = GPIO2
 
-// Variables to store time intervals (in milliseconds)
-unsigned long relayOnTime = 1000; // Default: 1 second ON
-unsigned long relayOffTime = 1000; // Default: 1 second OFF
+// === SERVER & BLINK ===
+ESP8266WebServer server(80);
+unsigned long blinkInterval = 300000; // default 1s
+unsigned long lastToggle = 0;
+bool ledState = false;
 
-// Timer variables
-unsigned long previousMillis = 0;
-bool relayState = false;
-bool overrideMode = false; // Flag to override automatic control
-bool overrideState = false; // State of the relay when in override mode
+void handleRoot() {
+  String html = R"rawliteral(
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <title>ESP8266 Blink Control</title>
+      <style>
+        body {
+          background-color: #121212;
+          color: #e0e0e0;
+          font-family: Arial, sans-serif;
+          text-align: center;
+          padding: 50px;
+        }
+        input {
+          padding: 10px;
+          font-size: 1em;
+        }
+        button {
+          padding: 10px 20px;
+          font-size: 1em;
+          margin-top: 10px;
+        }
+      </style>
+    </head>
+    <body>
+      <h1>NFT Tower Controll</h1>
+      <p>Current interval: )rawliteral" + String(blinkInterval) + R"rawliteral(ms)</p>
+      <form method='POST' action='/set'>
+        <input type='number' name='interval' min='100' value=')rawliteral" + String(blinkInterval) + R"rawliteral(' required>
+        <button type='submit'>Set Interval</button>
+      </form>
+    </body>
+    </html>
+  )rawliteral";
+  server.send(200, "text/html", html);
+}
 
-// Web server
-AsyncWebServer server(80);
+void handleSet() {
+  if (server.hasArg("interval")) {
+    blinkInterval = server.arg("interval").toInt();
+    if (blinkInterval < 100) blinkInterval = 100; // minimum 100ms
+  }
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
 
 void setup() {
-  // Setup relay as an output and turn it off
-  pinMode(relayPin, OUTPUT);
-  digitalWrite(relayPin, HIGH); // Assume LOW is ON for relay
-  
-  // Connect to Wi-Fi
-  connectToWiFi();
+  Serial.begin(9600);
 
-  // Setup OTA (Over-The-Air updates)
+  pinMode(PIN_D4, OUTPUT);
+
+  // === WiFi ===
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected! IP: " + WiFi.localIP().toString());
+
+  // === OTA ===
+  ArduinoOTA.setHostname("ESP8266-Blink");
   ArduinoOTA.begin();
+  Serial.println("OTA Ready!");
 
-  // Start the web server
-  startWebServer();
+  // === Web Server ===
+  server.on("/", handleRoot);
+  server.on("/set", HTTP_POST, handleSet);
+  server.begin();
+  Serial.println("HTTP server started.");
 
-  // Initialize time (NTP)
-  configTime(0, 0, "pool.ntp.org");  // Set time from NTP server
 }
 
 void loop() {
-  // Handle OTA updates
+  // === OTA ===
   ArduinoOTA.handle();
 
-  // If override mode is active, the relay state is controlled manually
-  if (overrideMode) {
-    digitalWrite(relayPin, overrideState ? LOW : HIGH);  // LOW = ON, HIGH = OFF
-    return;
+  // === Server ===
+  server.handleClient();
+
+  // === Blink Control ===
+  unsigned long now = millis();
+  if (now - lastToggle >= blinkInterval) {
+    ledState = !ledState;
+    digitalWrite(PIN_D4, ledState ? HIGH : LOW);
+    lastToggle = now;
   }
-
-  // Handle relay timing (automatic mode)
-  unsigned long currentMillis = millis();
-  if (relayState && currentMillis - previousMillis >= relayOnTime) {
-    previousMillis = currentMillis;
-    digitalWrite(relayPin, HIGH); // Turn OFF relay
-    relayState = false;
-  } else if (!relayState && currentMillis - previousMillis >= relayOffTime) {
-    previousMillis = currentMillis;
-    digitalWrite(relayPin, LOW);  // Turn ON relay
-    relayState = true;
-  }
-}
-
-// WiFi connection
-void connectToWiFi() {
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-  }
-}
-
-// Web server interface to display relay states, input time intervals, and toggle manual control
-void startWebServer() {
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    String htmlPage = "<html><head><title>ESP32 Relay Control</title></head><body>";
-    
-    // Display current time
-    time_t now = time(nullptr);
-    struct tm *currentTime = localtime(&now);
-    String currentTimeStr = String(currentTime->tm_hour) + ":" + String(currentTime->tm_min) + ":" + String(currentTime->tm_sec);
-    htmlPage += "<h1>ESP32 Relay Control</h1>";
-    htmlPage += "<p><strong>Current Time:</strong> " + currentTimeStr + "</p>";
-    
-    // Display relay status
-    String relayStateStr = digitalRead(relayPin) == LOW ? "ON" : "OFF";
-    htmlPage += "<p><strong>Relay Status:</strong> " + relayStateStr + "</p>";
-    
-    // Form to input relay ON/OFF intervals
-    htmlPage += "<form action='/setIntervals' method='POST'>";
-    htmlPage += "<p><label>Relay ON time (in seconds): </label><input type='number' name='onTime' value='" + String(relayOnTime / 1000) + "'></p>";
-    htmlPage += "<p><label>Relay OFF time (in seconds): </label><input type='number' name='offTime' value='" + String(relayOffTime / 1000) + "'></p>";
-    htmlPage += "<p><input type='submit' value='Set Intervals'></p>";
-    htmlPage += "</form>";
-
-    // Toggle buttons for manual control
-    htmlPage += "<form action='/toggleRelay' method='POST'>";
-    htmlPage += "<p><input type='submit' name='toggle' value='" + String(overrideMode ? (overrideState ? "Force OFF" : "Force ON") : "Override ON") + "'></p>";
-    htmlPage += "</form>";
-    
-    htmlPage += "</body></html>";
-    
-    request->send(200, "text/html", htmlPage);
-  });
-
-  // Handle form submission for setting intervals
-  server.on("/setIntervals", HTTP_POST, [](AsyncWebServerRequest *request) {
-    String onTimeParam = request->getParam("onTime", true)->value();
-    String offTimeParam = request->getParam("offTime", true)->value();
-
-    relayOnTime = onTimeParam.toInt() * 1000; // Convert seconds to milliseconds
-    relayOffTime = offTimeParam.toInt() * 1000; // Convert seconds to milliseconds
-
-    request->send(200, "text/html", "<html><body><h1>Intervals Updated!</h1><p>Relay ON time: " + onTimeParam + " seconds</p><p>Relay OFF time: " + offTimeParam + " seconds</p><p><a href='/'>Go Back</a></p></body></html>");
-  });
-
-  // Handle toggle relay request for manual override
-  server.on("/toggleRelay", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (overrideMode) {
-      // Toggle between ON and OFF in override mode
-      overrideState = !overrideState;
-    } else {
-      // Enable override mode
-      overrideMode = true;
-      overrideState = false;  // Initially off in override mode
-    }
-
-    String toggleMessage = overrideMode ? (overrideState ? "Relay forced ON" : "Relay forced OFF") : "Relay back to auto control";
-    request->send(200, "text/html", "<html><body><h1>" + toggleMessage + "</h1><p><a href='/'>Go Back</a></p></body></html>");
-  });
-
-  server.begin();
 }
