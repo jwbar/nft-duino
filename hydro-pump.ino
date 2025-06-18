@@ -4,8 +4,8 @@
 #include <time.h>
 
 // WiFi credentials
-const char* ssid = "ZELDAIRIS";
-const char* password = "K4r4m3ll0";
+const char* ssid = "CHANGESSID";
+const char* password = "changePSWRD";
 
 // Relay pin
 const int relayPin = 13;
